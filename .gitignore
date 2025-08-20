@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.env
+*.log
+
+# macOS / IDE
+.DS_Store
+.vscode/
+.idea/
+
+# Build / test
+dist/
+build/
+.coverage
+.pytest_cache/
+
+# Project-specific
+data/vault
+*.wav
+
+# Node (if any frontend build in the future)
+node_modules/
+
+# Docker
+*.local

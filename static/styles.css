@@ -1,0 +1,218 @@
+/* static/styles.css */
+
+/* ---- Theme Variables ---- */
+:root{
+  --bg:#f6f7fb;
+  --panel-bg:#ffffff;
+  --border:#e6e8ef;
+  --text:#0f172a;
+  --muted:#64748b;
+  --accent:#111827;
+  --accent-contrast:#ffffff;
+  --row:#fafbff;
+
+  /* Events table sizing */
+  --events-row-height: 36px;    /* adjust to perfectly fit 10 rows on your screen */
+  --events-visible-rows: 10;    /* how many rows you want in view */
+  --events-header-extra: 44px;  /* header height + borders (tweak if header wraps) */
+}
+
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font-family: system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial, "Apple Color Emoji","Segoe UI Emoji";
+  line-height:1.4;
+}
+
+/* ---- Header ---- */
+header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  padding:12px 16px;
+  background:var(--accent);
+  color:var(--accent-contrast);
+}
+header h1{
+  font-size:18px;
+  margin:0;
+}
+#status{font-size:14px}
+#status-text{font-weight:600}
+
+/* ---- Controls ---- */
+.controls{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:16px;
+  padding:12px 16px;
+}
+.controls .left,
+.controls .right{
+  display:flex;
+  align-items:center;
+  gap:10px;
+  flex-wrap:wrap;
+}
+
+/* ---- Buttons ---- */
+button{
+  appearance:none;
+  border:1px solid var(--border);
+  background:var(--panel-bg);
+  color:var(--text);
+  padding:8px 12px;
+  border-radius:10px;
+  font-weight:600;
+  cursor:pointer;
+  transition:transform .02s ease, box-shadow .2s ease, background .2s ease;
+  box-shadow:0 1px 1px rgba(0,0,0,.03);
+}
+button:hover{
+  background:#f3f4f8;
+}
+button:active{
+  transform:translateY(1px);
+}
+button[disabled]{
+  opacity:.5;
+  cursor:not-allowed;
+}
+
+/* ---- Game/Point strip ---- */
+.gp{
+  display:flex;
+  gap:24px;
+  padding:0 16px 12px 16px;
+  color:var(--muted);
+  font-weight:600;
+}
+
+/* ---- Panels & Grid ---- */
+.grid{
+  display:grid;
+  gap:16px;
+  grid-template-columns: 1fr 1fr;
+  padding:0 16px 16px;
+}
+@media (max-width: 920px){
+  .grid{ grid-template-columns: 1fr; }
+}
+.panel{
+  background:var(--panel-bg);
+  border:1px solid var(--border);
+  border-radius:12px;
+  padding:12px;
+  box-shadow:0 2px 8px rgba(0,0,0,.03);
+}
+.panel h2{
+  margin:0 0 10px 0;
+  font-size:16px;
+}
+
+/* ---- Heard (listener) ---- */
+.panel.heard{
+  padding:8px 12px;
+  min-width:320px;
+}
+.heard-label{
+  font-size:12px;
+  color:var(--muted);
+  margin-bottom:2px;
+}
+.heard-text{
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  font-weight:600;
+}
+.panel.heard.is-partial .heard-text{ opacity:.72; }
+
+/* ---- Tables ---- */
+table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:14px;
+}
+thead th{
+  text-align:left;
+  border-bottom:1px solid var(--border);
+  padding:8px 8px;
+  color:var(--muted);
+  font-weight:700;
+  background:var(--panel-bg);
+}
+tbody td{
+  border-bottom:1px solid #f0f1f6;
+  padding:8px 8px;
+  vertical-align:top;
+}
+tbody tr:nth-child(odd){
+  background:var(--row);
+}
+td.num{
+  text-align:right;
+  font-variant-numeric:tabular-nums;
+}
+
+/* ---- Scrollable Events table (≈10 rows visible) ---- */
+.table-scroll{
+  max-height: calc(var(--events-row-height) * var(--events-visible-rows) + var(--events-header-extra));
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+
+/* Sticky header while scrolling inside the events panel */
+#events thead th{
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  box-shadow: 0 1px 0 var(--border);
+}
+
+/* Tighten event rows slightly for density */
+#events tbody td{
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+/* Optional: nicer scrollbars on WebKit/Blink */
+.table-scroll::-webkit-scrollbar{
+  width: 10px;
+}
+.table-scroll::-webkit-scrollbar-thumb{
+  background: #d7dae3;
+  border-radius: 8px;
+}
+.table-scroll::-webkit-scrollbar-thumb:hover{
+  background: #c8cdd9;
+}
+
+/* ---- Transcript ---- */
+.transcript{
+  padding:0 16px 24px;
+}
+.transcript h3{
+  margin:12px 0 8px 0;
+  font-size:14px;
+  color:var(--muted);
+}
+#partial{
+  margin:0;
+  background:var(--panel-bg);
+  border:1px solid var(--border);
+  border-radius:10px;
+  padding:12px;
+  white-space:pre-wrap;
+  min-height:44px;
+}
+
+/* ---- Links ---- */
+a{ color:#2563eb; text-decoration:none; }
+a:hover{ text-decoration:underline; }
