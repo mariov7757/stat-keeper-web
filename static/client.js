@@ -1,273 +1,218 @@
-// static/client.js
+/* static/client.js */
 
-(() => {
-  // ---------- Socket.IO ----------
-  const socket = io({
-    transports: ["polling", "websocket"],
-    upgrade: true,
-    timeout: 20000,
-  });
-  window.socket = socket;
+const socket = io();
+const statusEl = document.getElementById("status-text");
+const gameEl = document.getElementById("game-no");
+const pointEl = document.getElementById("point-no");
+const heardBox = document.getElementById("heard");
+const heardText = document.getElementById("heard-text");
 
-  const statusText = document.getElementById("status-text");
-  const heardBox  = document.querySelector(".panel.heard");
-  const heardText = document.getElementById("heard-text");
-  const partialPre = document.getElementById("partial");
+const btnStart = document.getElementById("btn-start");
+const btnStop  = document.getElementById("btn-stop");
+const btnUndo  = document.getElementById("btn-undo");
+const btnPoint = document.getElementById("btn-point");
+const btnGame  = document.getElementById("btn-game");
+const btnExport= document.getElementById("btn-export");
 
-  socket.on("connect",    () => statusText && (statusText.textContent = "connected"));
-  socket.on("disconnect", (r) => statusText && (statusText.textContent = `disconnected: ${r}`));
-  socket.io.on("error",   (e) => console.error("socket.io error", e));
-  socket.on("connect_error", (e) => console.error("connect_error", e));
+const VISIBLE_EVENT_ROWS = 10; // show only the latest 10 rows
 
-  // ---------- UI elements ----------
-  const btnStart = document.getElementById("btn-start");
-  const btnStop  = document.getElementById("btn-stop");
-  const btnUndo  = document.getElementById("btn-undo");
-  const btnPoint = document.getElementById("btn-point");
-  const btnGame  = document.getElementById("btn-game");
-  const btnExport= document.getElementById("btn-export");
+let audio = {
+  ctx: null,
+  source: null,
+  processor: null,
+  stream: null,
+  running: false,
+  inRate: 48000,
+  outRate: 16000
+};
 
-  const tblPlayersBody = document.querySelector("#players tbody");
-  const tblEventsBody  = document.querySelector("#events tbody");
-  const gameNoEl = document.getElementById("game-no");
-  const pointNoEl = document.getElementById("point-no");
+/* -------- Socket wiring -------- */
+socket.on("connect", () => {
+  statusEl.textContent = "connected";
+});
 
-  // ---------- Mic streaming ----------
-  let audioCtx = null;
-  let mediaStream = null;
-  let sourceNode = null;
-  let processor = null;
+socket.on("disconnect", () => {
+  statusEl.textContent = "disconnected";
+});
 
-  const outSampleRate = 16000;
-  const bufSize = 4096; // or 8192 for fewer emits
+socket.on("status", (msg) => {
+  if (msg && msg.msg) statusEl.textContent = msg.msg;
+});
 
-  function floatTo16BitPCM(float32) {
-    const out = new Int16Array(float32.length);
-    for (let i = 0; i < float32.length; i++) {
-      let s = Math.max(-1, Math.min(1, float32[i]));
-      out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-    }
-    return out;
+socket.on("partial", ({text}) => {
+  if (!text) return;
+  heardText.textContent = text;
+  heardBox.classList.add("is-partial");
+});
+
+socket.on("final", ({text}) => {
+  heardText.textContent = text || "—";
+  heardBox.classList.remove("is-partial");
+});
+
+socket.on("stats", (payload) => {
+  if (!payload) return;
+  gameEl.textContent = payload.game;
+  pointEl.textContent = payload.point;
+  renderPlayers(payload.players || []);
+  renderEvents((payload.events || []));
+});
+
+/* -------- UI buttons -------- */
+btnStart.addEventListener("click", startMic);
+btnStop.addEventListener("click", stopMic);
+btnUndo.addEventListener("click", () => socket.emit("command", {cmd:"undo"}));
+btnPoint.addEventListener("click", () => socket.emit("command", {cmd:"new_point"}));
+btnGame.addEventListener("click", () => socket.emit("command", {cmd:"new_game"}));
+btnExport.addEventListener("click", () => socket.emit("command", {cmd:"export"}));
+
+/* -------- Renderers -------- */
+function renderPlayers(players){
+  const tbody = document.querySelector("#players tbody");
+  tbody.innerHTML = "";
+  for (const p of players) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td>${escapeHtml(p.player)}</td>
+      <td class="num">${p.throws}</td>
+      <td class="num">${p.completions}</td>
+      <td class="num">${p.turnovers}</td>
+      <td class="num">${p.drops ?? 0}</td>
+      <td class="num">${p.hucks}</td>
+      <td class="num">${p.huck_completions}</td>
+      <td class="num">${p.ds}</td>
+      <td class="num">${p.assists}</td>
+      <td class="num">${p.scores}</td>
+    `;
+    tbody.appendChild(tr);
   }
+}
 
-  function downsampleLinear(buffer, inRate, outRate) {
-    if (outRate === inRate) return buffer;
-    const ratio = inRate / outRate;
-    const newLen = Math.floor(buffer.length / ratio);
-    const out = new Float32Array(newLen);
-    for (let i = 0; i < newLen; i++) {
-      const idx = i * ratio;
-      const idx0 = Math.floor(idx);
-      const idx1 = Math.min(idx0 + 1, buffer.length - 1);
-      const frac = idx - idx0;
-      out[i] = buffer[idx0] * (1 - frac) + buffer[idx1] * frac;
-    }
-    return out;
+function eventDetails(ev){
+  switch(ev.type){
+    case "throw": return `${ev.thrower} → ${ev.receiver} (${ev.outcome})`;
+    case "huck":  return `Huck ${ev.thrower} → ${ev.receiver} (${ev.outcome})`;
+    case "assist":return `${ev.player} assist`;
+    case "score": return `${ev.player} score`;
+    case "d":     return `${ev.player} D`;
+    case "drop":  return `${ev.player} drop`;
+    case "new_point": return `— new point —`;
+    case "new_game":  return `— new game —`;
+    default: return ev.type || "";
   }
+}
 
-  async function startMic() {
-    try {
-      if (audioCtx && audioCtx.state === "suspended") await audioCtx.resume();
-      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-      mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      sourceNode = audioCtx.createMediaStreamSource(mediaStream);
-      processor = audioCtx.createScriptProcessor(bufSize, 1, 1);
-
-      processor.onaudioprocess = (e) => {
-        try {
-          const inBuf = e.inputBuffer.getChannelData(0);
-          const down = downsampleLinear(inBuf, audioCtx.sampleRate, outSampleRate);
-          const pcm16 = floatTo16BitPCM(down);
-          socket.emit("audio_chunk", pcm16.buffer);
-        } catch (err) {
-          console.error("audio process error:", err);
-        }
-      };
-
-      sourceNode.connect(processor);
-      processor.connect(audioCtx.destination); // required in some browsers
-
-      btnStart.disabled = true;
-      btnStop.disabled  = false;
-      console.log("mic started @", audioCtx.sampleRate, "Hz →", outSampleRate, "Hz");
-    } catch (err) {
-      console.error("mic error:", err);
-      statusText && (statusText.textContent = "mic error (see console)");
-    }
+function renderEvents(events){
+  // Events are already newest-first from server; render only the latest 10
+  const view = events.slice(0, VISIBLE_EVENT_ROWS);
+  const tbody = document.querySelector("#events tbody");
+  tbody.innerHTML = "";
+  for (const ev of view) {
+    const tr = document.createElement("tr");
+    const gp = `${ev.game}/${ev.point}`;
+    tr.innerHTML = `
+      <td>${escapeHtml(ev.t || "")}</td>
+      <td>${escapeHtml(gp)}</td>
+      <td>${escapeHtml(ev.type)}</td>
+      <td>${escapeHtml(eventDetails(ev))}</td>
+    `;
+    tbody.appendChild(tr);
   }
+}
 
-  function stopMic() {
-    try {
-      if (processor) { processor.disconnect(); processor.onaudioprocess = null; processor = null; }
-      if (sourceNode) { sourceNode.disconnect(); sourceNode = null; }
-      if (mediaStream) { mediaStream.getTracks().forEach(t => t.stop()); mediaStream = null; }
-      btnStart.disabled = false;
-      btnStop.disabled  = true;
-      console.log("mic stopped");
-    } catch (err) {
-      console.error("stop mic error:", err);
-    }
+/* -------- Mic streaming (16k PCM Int16 via Socket.IO) -------- */
+async function startMic(){
+  if (audio.running) return;
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        channelCount: 1,
+        noiseSuppression: true,
+        echoCancellation: true,
+        autoGainControl: true
+      }
+    });
+    audio.stream = stream;
+
+    const ctx = new (window.AudioContext || window.webkitAudioContext)();
+    audio.ctx = ctx;
+    audio.inRate = ctx.sampleRate;
+    audio.source = ctx.createMediaStreamSource(stream);
+
+    const bufSize = 4096;
+    const processor = ctx.createScriptProcessor(bufSize, 1, 1);
+    audio.processor = processor;
+
+    processor.onaudioprocess = (e) => {
+      if (!audio.running) return;
+      const input = e.inputBuffer.getChannelData(0);
+      const down = downsampleBuffer(input, audio.inRate, audio.outRate);
+      const pcm = floatTo16BitPCM(down);
+      // Send as binary ArrayBuffer
+      socket.emit("audio_chunk", pcm.buffer);
+    };
+
+    audio.source.connect(processor);
+    processor.connect(ctx.destination);
+
+    audio.running = true;
+    btnStart.disabled = true;
+    btnStop.disabled = false;
+    statusEl.textContent = "mic streaming…";
+  } catch (err) {
+    console.error(err);
+    statusEl.textContent = "mic error";
   }
+}
 
-  document.addEventListener("visibilitychange", async () => {
-    if (document.visibilityState === "visible" && audioCtx && audioCtx.state === "suspended") {
-      try { await audioCtx.resume(); } catch {}
+function stopMic(){
+  if (!audio.running) return;
+  try {
+    audio.running = false;
+    if (audio.processor) {
+      audio.processor.disconnect();
+      audio.processor.onaudioprocess = null;
     }
-  });
-
-  // ---------- Server events ----------
-  socket.on("status", ({ msg }) => {
-    if (statusText) statusText.textContent = msg || "";
-  });
-
-  socket.on("stats", (data) => {
-    // Game/Point
-    if (typeof data.game === "number") gameNoEl.textContent = String(data.game);
-    if (typeof data.point === "number") pointNoEl.textContent = String(data.point);
-
-    // Players table
-    const players = Array.isArray(data.players)
-      ? data.players
-      : Object.entries(data.players || {}).map(([name, st]) => ({ player: name, ...st }));
-
-    tblPlayersBody.innerHTML = "";
-    for (const p of players) {
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${escapeHtml(p.player || "")}</td>
-        <td class="num">${p.throws ?? 0}</td>
-        <td class="num">${p.completions ?? 0}</td>
-        <td class="num">${p.turnovers ?? 0}</td>
-        <td class="num">${p.hucks ?? 0}</td>
-        <td class="num">${p.huck_completions ?? 0}</td>
-        <td class="num">${p.ds ?? 0}</td>
-        <td class="num">${p.assists ?? 0}</td>
-        <td class="num">${p.scores ?? 0}</td>
-      `;
-      tblPlayersBody.appendChild(tr);
+    if (audio.source) audio.source.disconnect();
+    if (audio.ctx) audio.ctx.close();
+    if (audio.stream) {
+      for (const t of audio.stream.getAudioTracks()) t.stop();
     }
-
-    // Events table (show newest at bottom)
-    const events = data.events || [];
-    tblEventsBody.innerHTML = "";
-    for (const ev of events) {
-      const details = renderEventDetails(ev);
-      const tr = document.createElement("tr");
-      tr.innerHTML = `
-        <td>${escapeHtml(ev.t || "")}</td>
-        <td>${(ev.game ?? "")}/${(ev.point ?? "")}</td>
-        <td>${escapeHtml(ev.type || "")}</td>
-        <td>${escapeHtml(details)}</td>
-      `;
-      tblEventsBody.appendChild(tr);
-    }
-  });
-
-  // Live transcript for the "Heard" box + debug <pre>
-  socket.on("partial", ({ text }) => {
-    if (heardText) heardText.textContent = (text || "").trim();
-    heardBox?.classList.add("is-partial");
-    if (partialPre) partialPre.textContent = text || "";
-  });
-
-  socket.on("final", ({ text }) => {
-    if (heardText) heardText.textContent = (text || "").trim();
-    heardBox?.classList.remove("is-partial");
-    if (partialPre) partialPre.textContent = text || "";
-  });
-
-  // ---------- Buttons ----------
-  btnStart?.addEventListener("click", startMic);
-  btnStop?.addEventListener("click", stopMic);
-
-  btnUndo?.addEventListener("click", () => {
-    socket.emit("command", { cmd: "undo" });
-  });
-
-  btnPoint?.addEventListener("click", () => {
-    socket.emit("command", { cmd: "new_point" });
-  });
-
-  btnGame?.addEventListener("click", () => {
-    socket.emit("command", { cmd: "new_game" });
-  });
-
-  // Manual export now — shows links to the files in /data/game X/
-  btnExport?.addEventListener("click", async () => {
-    try {
-      const res = await fetch("/export", { method: "POST" });
-      const data = await res.json();
-      if (!data.ok) throw new Error(data.error || "export failed");
-
-      const links = (data.written_rel || [])
-        .map(rel => `<a href="/download/${encodeDownloadPath(rel)}" target="_blank">${escapeHtml(rel)}</a>`)
-        .join(" · ");
-
-      toast(`Saved to /data/${escapeHtml(data.game_dir_rel)}<br>${links}`);
-    } catch (e) {
-      console.error(e);
-      toast("Save failed. Check server logs.");
-    }
-  });
-
-  // Optional keyboard shortcut for Undo
-  document.addEventListener("keydown", (e) => {
-    if (e.key.toLowerCase() === "u" && !e.repeat) socket.emit("command", { cmd: "undo" });
-  });
-
-  // ---------- Helpers ----------
-  function encodeDownloadPath(relPath) {
-    // encode each segment so spaces ("game 2") work: game%202/point_1.csv
-    return relPath.split("/").map(encodeURIComponent).join("/");
+  } catch (e) {
+    // ignore
   }
+  btnStart.disabled = false;
+  btnStop.disabled = true;
+  statusEl.textContent = "mic stopped";
+}
 
-  function escapeHtml(s) {
-    return String(s)
-      .replaceAll("&", "&amp;")
-      .replaceAll("<", "&lt;")
-      .replaceAll(">", "&gt;")
-      .replaceAll('"', "&quot;")
-      .replaceAll("'", "&#039;");
+/* -------- helpers -------- */
+function downsampleBuffer(buffer, inRate, outRate){
+  if (outRate === inRate) return buffer;
+  const ratio = inRate / outRate;
+  const newLen = Math.floor(buffer.length / ratio);
+  const result = new Float32Array(newLen);
+  let off = 0;
+  for (let i = 0; i < newLen; i++){
+    result[i] = buffer[Math.floor(off)];
+    off += ratio;
   }
+  return result;
+}
 
-  function renderEventDetails(ev) {
-    switch (ev.type) {
-      case "throw":
-        return `${ev.thrower || ""} → ${ev.receiver || ""} (${ev.outcome || ""})`;
-      case "huck":
-        return `${ev.thrower || ""} ⇢ ${ev.receiver || ""} (${ev.outcome || ""})`;
-      case "assist":
-        return `${ev.player || ""} (assist)`;
-      case "score":
-        return `${ev.player || ""} (score)`;
-      case "d":
-        return `${ev.player || ""} (D)`;
-      case "new_point":
-        return `Point ${ev.point}`;
-      case "new_game":
-        return `Game ${ev.game}`;
-      default:
-        return "";
-    }
+function floatTo16BitPCM(input){
+  const out = new Int16Array(input.length);
+  for (let i = 0; i < input.length; i++){
+    let s = Math.max(-1, Math.min(1, input[i]));
+    out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
   }
+  return out;
+}
 
-  function toast(msg) {
-    console.log(msg);
-    try {
-      const el = document.createElement("div");
-      el.innerHTML = msg;
-      el.style.cssText = "position:fixed;right:12px;bottom:12px;background:#333;color:#fff;padding:8px 12px;border-radius:8px;opacity:.95;z-index:9999;max-width:80vw";
-      document.body.appendChild(el);
-      setTimeout(() => el.remove(), 4000);
-    } catch {}
-  }
-
-  // Initialize displayed game/point from server-rendered values (if present)
-  if (window.INIT_GAME)  gameNoEl.textContent = window.INIT_GAME;
-  if (window.INIT_POINT) pointNoEl.textContent = window.INIT_POINT;
-
-  // Clean up on unload
-  window.addEventListener("beforeunload", () => {
-    try { stopMic(); } catch {}
-  });
-})();
+function escapeHtml(s){
+  return (s ?? "").toString()
+    .replace(/&/g,"&amp;")
+    .replace(/</g,"&lt;")
+    .replace(/>/g,"&gt;")
+    .replace(/"/g,"&quot;");
+}

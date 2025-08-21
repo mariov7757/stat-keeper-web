@@ -1,7 +1,11 @@
-# app.py — Ultimate Voice Stats server with Undo, per-game exports, refined dedupe rules,
-#          and AUTO "New Point" after assists (no double-count, single Undo)
+# app.py — Ultimate Voice Stats server
+# - Vosk + Socket.IO (eventlet)
+# - Undo + per-game exports
+# - Auto "New Point" after assists
+# - Dedupe window = 4 seconds
+# - Supports: throw, huck, assist, assist to, score, D, drop
+# - Phrases like "Jake turn to Mario" and "Jake to Mario (completed/turn)" supported
 
-# ---- Bootstrap (must be first) ----
 import eventlet
 eventlet.monkey_patch()
 
@@ -47,15 +51,15 @@ ROSTER = [
     "Jake","Brandon","Justice","Kale","Martin","Walker","Tucker","Beemer","Big Jake","Christian"
 ]
 
-# Dedupe window (seconds) for combining voice commands
+# Dedupe window (seconds) for combining voice commands (requested: 4s)
 DEDUPE_WINDOW_SEC = 4.0
 
 # ---- Globals ----
-_model = None            # Vosk model (single)
-REC = None               # Single recognizer (rebuilt on roster change if needed)
-LOCK = Semaphore(1)      # Protect REC/model swaps
+_model = None
+REC = None
+LOCK = Semaphore(1)
 AUDIO_Q = Queue(maxsize=256)
-LAST_PARTIAL = ""        # for UI dedupe
+LAST_PARTIAL = ""
 
 METRICS = {
     "chunks_enqueued": 0,
@@ -85,11 +89,12 @@ class StatBook:
         self.players = {
             n: {"ds": 0, "assists": 0, "scores": 0,
                 "throws": 0, "completions": 0, "turnovers": 0,
-                "hucks": 0, "huck_completions": 0}
+                "hucks": 0, "huck_completions": 0,
+                "drops": 0}
             for n in self.roster
         }
         self._history = []
-        self._last_point_change = 0.0   # guard to avoid double-increment when auto+manual
+        self._last_point_change = 0.0   # guard to avoid double-increment auto+manual
 
     # --- history helpers ---
     def _snapshot(self):
@@ -119,7 +124,8 @@ class StatBook:
     def _blank(self):
         return {"ds": 0, "assists": 0, "scores": 0,
                 "throws": 0, "completions": 0, "turnovers": 0,
-                "hucks": 0, "huck_completions": 0}
+                "hucks": 0, "huck_completions": 0,
+                "drops": 0}
 
     def _ensure(self, name):
         n = (name or "").lower().strip()
@@ -177,7 +183,8 @@ class StatBook:
         for p in self.players.values():
             p.update({"ds": 0, "assists": 0, "scores": 0,
                       "throws": 0, "completions": 0, "turnovers": 0,
-                      "hucks": 0, "huck_completions": 0})
+                      "hucks": 0, "huck_completions": 0,
+                      "drops": 0})
         now = self._now()
         self._last_point_change = now
         self.add_event({"ts_epoch": now, "t": ts(), "type": "new_game",
@@ -199,13 +206,22 @@ class StatBook:
         self.add_event({"ts_epoch": now, "t": ts(), "type": "new_point",
                         "game": self.game_no, "point": self.point_no})
 
-    # --- events (apply your desired rules) ---
+    # --- events ---
     def record_d(self, x):
         self._push_history()
         x = self._ensure(x)
         if not x: return
         self.players[x]["ds"] += 1
         self.add_event({"ts_epoch": self._now(), "t": ts(), "type": "d",
+                        "player": x, "game": self.game_no, "point": self.point_no})
+
+    def record_drop(self, x):
+        """Increment only the 'drops' counter for player X and log an event."""
+        self._push_history()
+        x = self._ensure(x)
+        if not x: return
+        self.players[x]["drops"] += 1
+        self.add_event({"ts_epoch": self._now(), "t": ts(), "type": "drop",
                         "player": x, "game": self.game_no, "point": self.point_no})
 
     def record_assist(self, x):
@@ -231,7 +247,7 @@ class StatBook:
                 self.players[y]["scores"] += 1
                 self.add_event({"ts_epoch": self._now(), "t": ts(), "type": "score",
                                 "player": y, "game": self.game_no, "point": self.point_no})
-            # AUTO: new point (no extra history; guarded)
+            # AUTO: new point
             self.new_point(push_history=False, reason="auto")
             return
 
@@ -373,6 +389,7 @@ def build_grammar_phrases(roster):
         phrases.add(f"{n} d")
         phrases.add(f"{n} assist"); phrases.add(f"{n} assists")
         phrases.add(f"{n} score");  phrases.add(f"{n} scores")
+        phrases.add(f"{n} drop");   phrases.add(f"{n} drops")
 
     # pair events (throws, hucks, bare "x to y", "x turn to y", and "x assist(s) to y")
     for x in roster:
@@ -423,8 +440,13 @@ def parse_command(text, roster_regex):
     # single-name
     m = re.match(rf"^\s*(?P<x>{name_pat})\s+d\b", s)
     if m: return ("d", {"x": re.sub(r"\s+", " ", m.group("x")).strip()})
+
+    m = re.match(rf"^\s*(?P<x>{name_pat})\s+drops?\b$", s)
+    if m: return ("drop", {"x": re.sub(r"\s+", " ", m.group("x")).strip()})
+
     m = re.match(rf"^\s*(?P<x>{name_pat})\s+assists?\b$", s)
     if m: return ("assist", {"x": re.sub(r"\s+", " ", m.group("x")).strip()})
+
     m = re.match(rf"^\s*(?P<y>{name_pat})\s+scores?\b$", s)
     if m: return ("score", {"y": re.sub(r"\s+", " ", m.group("y")).strip()})
 
@@ -549,7 +571,8 @@ def export_csvs():
         # Overall stats (one row per player)
         overall_path_abs = os.path.join(dir_abs, f"game_{game_no}_overall.csv")
         overall_path_rel = f"{dir_rel}/game_{game_no}_overall.csv"
-        pfields = ["player","throws","completions","turnovers","hucks","huck_completions","ds","assists","scores"]
+        pfields = ["player","throws","completions","turnovers","drops",
+                   "hucks","huck_completions","ds","assists","scores"]
         with open(overall_path_abs, "w", newline="") as f:
             w = csv.DictWriter(f, fieldnames=pfields)
             w.writeheader()
@@ -559,6 +582,7 @@ def export_csvs():
                     "throws": st["throws"],
                     "completions": st["completions"],
                     "turnovers": st["turnovers"],
+                    "drops": st["drops"],
                     "hucks": st["hucks"],
                     "huck_completions": st["huck_completions"],
                     "ds": st["ds"],
@@ -568,7 +592,7 @@ def export_csvs():
         written_rel.append(overall_path_rel)
 
         # Per-point events (skip new_game/new_point)
-        include_types = {"throw","huck","assist","score","d"}
+        include_types = {"throw","huck","assist","score","d","drop"}
         efields = ["t","type","game","point","player","thrower","receiver","outcome"]
 
         max_point = BOOK.point_no
@@ -716,7 +740,7 @@ def audio_worker_loop():
         # Required fields guard
         REQUIRED = {
             "new_game": [], "new_point": [], "undo": [],
-            "d": ["x"], "assist": ["x"], "score": ["y"],
+            "d": ["x"], "drop": ["x"], "assist": ["x"], "score": ["y"],
             "assist_to": ["x","y"],
             "throw": ["x","y","result"], "huck": ["x","y","result"],
         }
@@ -738,6 +762,8 @@ def audio_worker_loop():
                 BOOK.new_point()
             elif action == "d":
                 BOOK.record_d(payload["x"])
+            elif action == "drop":
+                BOOK.record_drop(payload["x"])
             elif action == "assist":
                 BOOK.record_assist(payload["x"])
             elif action == "score":
@@ -785,7 +811,6 @@ def debug():
 def export_now():
     try:
         manifest = export_csvs()
-        # Return relative paths usable with /download/<path>
         return jsonify({"ok": True, "dir": DATA_DIR, **manifest})
     except Exception as e:
         logger.exception("manual export failed")
@@ -793,7 +818,6 @@ def export_now():
 
 @app.get("/download/<path:fname>")
 def download_file(fname):
-    # Serve files by relative path inside DATA_DIR (supports "game X/point_Y.csv")
     return send_from_directory(DATA_DIR, fname, as_attachment=True)
 
 # ---- Main ----

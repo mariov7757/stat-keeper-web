@@ -4,11 +4,7 @@
   <meta charset="utf-8"/>
   <title>Ultimate Voice Stats (Web)</title>
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <link rel="stylesheet" href="/static/styles.css" />
-  <script>
-    window.INIT_GAME = "{{ game_no }}";
-    window.INIT_POINT = "{{ point_no }}";
-  </script>
+  <link rel="stylesheet" href="/static/styles.css?v=4" />
 </head>
 <body>
   <header>
@@ -18,13 +14,11 @@
 
   <section class="controls">
     <div class="left">
-      <!-- Heard (live transcript) -->
-      <div class="panel heard">
-        <div class="heard-label">Heard</div>
-        <div id="heard-text" class="heard-text">(waiting)</div>
+      <div class="panel heard" id="heard">
+        <div class="heard-label">Listening…</div>
+        <div class="heard-text" id="heard-text">—</div>
       </div>
     </div>
-
     <div class="right">
       <button id="btn-start">🎙️ Start Mic</button>
       <button id="btn-stop" disabled>⏹️ Stop</button>
@@ -36,14 +30,13 @@
   </section>
 
   <section class="gp">
-    <div>Game: <span id="game-no">-</span></div>
-    <div>Point: <span id="point-no">-</span></div>
+    <div>Game: <span id="game-no">{{ game_no }}</span></div>
+    <div>Point: <span id="point-no">{{ point_no }}</span></div>
   </section>
 
   <section class="grid">
     <div class="panel">
       <h2>Events</h2>
-      <!-- ADD THIS WRAPPER -->
       <div class="table-scroll" id="events-scroll">
         <table id="events">
           <thead>
@@ -59,7 +52,7 @@
       <table id="players">
         <thead>
           <tr>
-            <th>Player</th><th>Thr</th><th>Cmp</th><th>TO</th>
+            <th>Player</th><th>Thr</th><th>Cmp</th><th>TO</th><th>Drp</th>
             <th>Huck</th><th>Hcmp</th><th>D</th><th>Ast</th><th>Scr</th>
           </tr>
         </thead>
@@ -69,6 +62,6 @@
   </section>
 
   <script src="https://cdn.socket.io/4.7.5/socket.io.min.js"></script>
-  <script src="/static/client.js"></script>
+  <script src="/static/client.js?v=4"></script>
 </body>
 </html>
